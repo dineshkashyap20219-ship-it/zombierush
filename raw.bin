@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>ZombieRush — Single File Game</title>
+<style>
+  html,body{height:100%;margin:0;font-family:system-ui,Segoe UI,Roboto,Arial}
+  #gameWrap{display:flex;flex-direction:column;align-items:center;padding:12px}
+  canvas{background:#111;border-radius:8px;box-shadow:0 6px 30px rgba(0,0,0,0.6)}
+  .hud{width:800px;display:flex;justify-content:space-between;margin-top:10px;color:#fff}
+  .hud div{background:rgba(255,255,255,0.03);padding:8px 12px;border-radius:6px}
+  .controls{width:800px;color:#ddd;margin-top:8px;font-size:13px}
+  #shop{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);background:#0b0b0b;color:#fff;padding:16px;border-radius:10px;display:none;box-shadow:0 8px 40px rgba(0,0,0,0.8);width:420px}
+  #shop h3{margin:0 0 8px}
+  .shop-row{display:flex;justify-content:space-between;margin:8px 0}
+  .btn{background:#1e90ff;border:none;padding:8px 12px;border-radius:6px;cursor:pointer}
+  .btn:active{transform:translateY(1px)}
+  .big{font-size:18px}
+</style>
+</head>
+<body>
+<div id="gameWrap">
+  <canvas id="c" width="800" height="500"></canvas>
+  <div class="hud">
+    <div id="status">Health: 100 • Tokens: 0 • Wave: 1</div>
+    <div id="score">Kills: 0 • Weapon: Pistol</div>
+  </div>
+  <div class="controls">Controls: WASD / Arrow keys to move • Mouse to aim • Click to shoot • Space to dash • P to pause • S to open Shop</div>
+</div>
+
+<div id="shop">
+  <h3>Shop — Spend tokens (Press S to close)</h3>
+  <div class="shop-row"><div>Pistol (default)</div><div>Owned</div></div>
+  <div class="shop-row"><div>Shotgun — 5 tokens</div><div><button class="btn" id="buyShot">Buy</button></div></div>
+  <div class="shop-row"><div>Machine Gun — 12 tokens</div><div><button class="btn" id="buyMG">Buy</button></div></div>
+  <div class="shop-row"><div>Speed Boots (move +20%) — 7 tokens</div><div><button class="btn" id="buyBoots">Buy</button></div></div>
+  <div class="shop-row"><div>Armor (+30 max health) — 10 tokens</div><div><button class="btn" id="buyArmor">Buy</button></div></div>
+  <div style="margin-top:8px;display:flex;justify-content:flex-end"><button class="btn" id="closeShop">Close</button></div>
+</div>
+
+<script>
+// Simple top-down zombie shooter: ZombieRush
+// Single-file, lightweight, all assets drawn with canvas. Save this file and open in browser.
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const W = canvas.width, H = canvas.height;
+
+let keys = {};
+let mouse = {x:W/2,y:H/2,down:false};
+let paused = false;
+
+// Player state
+let player = {
+  x: W/2, y: H/2, r: 14,
+  speed: 2.6, baseSpeed:2.6,
+  health: 100, maxHealth: 100,
+  dashCooldown:0,
+  weapon: 'Pistol',
+  weaponStats: {Pistol:{rate:300, dmg:18, last:0}, Shotgun:{rate:700,dmg:36,pellets:5,last:0}, MG:{rate:70,dmg:8,last:0}},
+  tokens:0, kills:0
+};
+
+let bullets = [];
+let zombies = [];
+let wave = 1;
+let waveTimer=0;
+let spawnCount=5;
+let lastFrame = performance.now();
+
+function spawnZombies(n){
+  for(let i=0;i<n;i++){
+    let side = Math.floor(Math.random()*4);
+    let x = side===0 ? -30 : side===1 ? W+30 : Math.random()*W;
+    let y = side===2 ? -30 : side===3 ? H+30 : Math.random()*H;
+    zombies.push({x,y,r:16+Math.random()*8,hp:30+wave*6,spd:0.6+Math.random()*0.6,ang:0});
+  }
+}
+
+spawnZombies(spawnCount);
+
+// Input
+window.addEventListener('keydown',e=>{keys[e.key.toLowerCase()]=true; if(e.key==='s' || e.key==='S'){toggleShop()} if(e.key==='p' || e.key==='P'){paused=!paused}});
+window.addEventListener('keyup',e=>{keys[e.key.toLowerCase()]=false});
+canvas.addEventListener('mousemove',e=>{const r=canvas.getBoundingClientRect();mouse.x=e.clientX-r.left;mouse.y=e.clientY-r.top});
+canvas.addEventListener('mousedown',e=>{mouse.down=true});
+canvas.addEventListener('mouseup',e=>{mouse.down=false});
+
+function canShoot(stats){
+  return performance.now()-stats.last >= stats.rate;
+}
+
+function shoot(){
+  const w = player.weapon;
+  const stats = player.weaponStats[w];
+  if(!canShoot(stats)) return;
+  stats.last = performance.now();
+  const ang = Math.atan2(mouse.y-player.y, mouse.x-player.x);
+  if(w==='Shotgun'){
+    for(let i=0;i<stats.pellets;i++){
+      const spread = (Math.random()-0.5)*0.6;
+      bullets.push({x:player.x,y:player.y,dx:Math.cos(ang+spread)*6,dy:Math.sin(ang+spread)*6,dmg:stats.dmg});
+    }
+  } else if(w==='MG'){
+    bullets.push({x:player.x,y:player.y,dx:Math.cos(ang)*8,dy:Math.sin(ang)*8,dmg:stats.dmg});
+  } else {
+    bullets.push({x:player.x,y:player.y,dx:Math.cos(ang)*7,dy:Math.sin(ang)*7,dmg:stats.dmg});
+  }
+}
+
+function update(dt){
+  if(paused) return;
+  // Movement
+  let mvx=0,mvy=0;
+  if(keys['w']||keys['arrowup']) mvy-=1;
+  if(keys['s']||keys['arrowdown']) mvy+=1;
+  if(keys['a']||keys['arrowleft']) mvx-=1;
+  if(keys['d']||keys['arrowright']) mvx+=1;
+  if(mvx||mvy){
+    const len = Math.hypot(mvx,mvy);
+    player.x += (mvx/len)*player.speed*dt;
+    player.y += (mvy/len)*player.speed*dt;
+  }
+  // Dash
+  if(keys[' '] && player.dashCooldown<=0){
+    const ang = Math.atan2(mouse.y-player.y, mouse.x-player.x);
+    player.x += Math.cos(ang)*80;
+    player.y += Math.sin(ang)*80;
+    player.dashCooldown = 1200; // ms
+  }
+  if(player.dashCooldown>0) player.dashCooldown -= dt*1000;
+
+  // Keep inside
+  player.x = Math.max(10,Math.min(W-10,player.x));
+  player.y = Math.max(10,Math.min(H-10,player.y));
+
+  // Shooting
+  if(mouse.down) shoot();
+
+  // Bullets
+  for(let i=bullets.length-1;i>=0;i--){
+    const b = bullets[i];
+    b.x += b.dx*dt*60/16;
+    b.y += b.dy*dt*60/16;
+    if(b.x<-50||b.x>W+50||b.y<-50||b.y>H+50) bullets.splice(i,1);
+  }
+
+  // Zombies
+  for(let i=zombies.length-1;i>=0;i--){
+    const z = zombies[i];
+    z.ang = Math.atan2(player.y-z.y, player.x-z.x);
+    z.x += Math.cos(z.ang)*z.spd*dt*60/16;
+    z.y += Math.sin(z.ang)*z.spd*dt*60/16;
+    // collision with player
+    const dist = Math.hypot(z.x-player.x, z.y-player.y);
+    if(dist < z.r + player.r){
+      // deal damage
+      player.health -= 8*dt*60/16;
+      if(player.health<=0){
+        player.health = 0; paused=true; // game over
+      }
+    }
+    // bullets hit
+    for(let j=bullets.length-1;j>=0;j--){
+      const b = bullets[j];
+      const d = Math.hypot(b.x-z.x,b.y-z.y);
+      if(d < z.r+3){
+        z.hp -= b.dmg;
+        bullets.splice(j,1);
+        if(z.hp<=0){
+          zombies.splice(i,1);
+          player.kills++; player.tokens+=1 + Math.floor(wave/3);
+        }
+        break;
+      }
+    }
+  }
+
+  // Wave progression
+  if(zombies.length===0){
+    wave++; spawnCount = 4 + Math.floor(wave*1.5);
+    spawnZombies(spawnCount);
+  }
+
+  // Cap
+  player.health = Math.min(player.maxHealth, player.health);
+}
+
+function draw(){
+  // background
+  ctx.clearRect(0,0,W,H);
+  // simple grid
+  ctx.save();
+  ctx.strokeStyle='rgba(255,255,255,0.03)'; ctx.lineWidth=1;
+  for(let x=0;x<W;x+=40){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke();}
+  for(let y=0;y<H;y+=40){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();}
+  ctx.restore();
+
+  // bullets
+  for(const b of bullets){
+    ctx.beginPath();ctx.fillStyle='#ffd';ctx.arc(b.x,b.y,3,0,Math.PI*2);ctx.fill();
+  }
+
+  // zombies
+  for(const z of zombies){
+    ctx.save();
+    ctx.translate(z.x,z.y);
+    ctx.rotate(z.ang);
+    ctx.fillStyle='#6b8';
+    ctx.beginPath();ctx.arc(0,0,z.r,0,Math.PI*2);ctx.fill();
+    // eyes
+    ctx.fillStyle='#111';ctx.beginPath();ctx.arc(-6,-4,3,0,Math.PI*2);ctx.arc(6,-4,3,0,Math.PI*2);ctx.fill();
+    ctx.restore();
+    // hp bar
+    ctx.fillStyle='rgba(0,0,0,0.6)';ctx.fillRect(z.x-20,z.y-z.r-8,40,6);
+    ctx.fillStyle='#ff6767';ctx.fillRect(z.x-20,z.y-z.r-8,40*(z.hp/(30+wave*6)),6);
+  }
+
+  // player
+  ctx.save();
+  ctx.translate(player.x,player.y);
+  const ang = Math.atan2(mouse.y-player.y, mouse.x-player.x);
+  ctx.rotate(ang);
+  // body
+  ctx.fillStyle='#3af';ctx.beginPath();ctx.arc(0,0,player.r,0,Math.PI*2);ctx.fill();
+  // gun
+  ctx.fillStyle='#222';ctx.fillRect(10,-5,18,10);
+  ctx.restore();
+
+  // UI
+  document.getElementById('status').textContent = `Health: ${Math.round(player.health)} • Tokens: ${player.tokens} • Wave: ${wave}`;
+  document.getElementById('score').textContent = `Kills: ${player.kills} • Weapon: ${player.weapon}`;
+
+  if(paused){
+    ctx.fillStyle='rgba(0,0,0,0.5)';ctx.fillRect(0,0,W,H);
+    ctx.fillStyle='#fff';ctx.font='28px sans-serif';ctx.textAlign='center';
+    ctx.fillText(player.health<=0 ? 'GAME OVER — Press R to restart' : 'PAUSED (P to resume)', W/2, H/2);
+  }
+}
+
+// Shop logic
+const shop = document.getElementById('shop');
+function toggleShop(){ if(shop.style.display==='none' || shop.style.display==='') {shop.style.display='block'; paused=true;} else {shop.style.display='none'; paused=false;} }
+
+document.getElementById('closeShop').onclick = ()=>toggleShop();
+document.getElementById('buyShot').onclick = ()=>{ if(player.tokens>=5 && player.weapon!=='Shotgun'){ player.tokens-=5; player.weapon='Shotgun'; alert('Bought Shotgun!'); toggleShop(); } else alert('Not enough tokens or already owned'); };
+document.getElementById('buyMG').onclick = ()=>{ if(player.tokens>=12){ player.tokens-=12; player.weapon='MG'; alert('Bought Machine Gun!'); toggleShop(); } else alert('Not enough tokens'); };
+document.getElementById('buyBoots').onclick = ()=>{ if(player.tokens>=7 && player.baseSpeed<4){ player.tokens-=7; player.baseSpeed *= 1.2; player.speed = player.baseSpeed; alert('Speed increased!'); toggleShop(); } else alert('Not enough tokens or already bought'); };
+document.getElementById('buyArmor').onclick = ()=>{ if(player.tokens>=10){ player.tokens-=10; player.maxHealth += 30; player.health += 30; alert('Armor equipped!'); toggleShop(); } else alert('Not enough tokens'); };
+
+// Restart
+window.addEventListener('keydown',e=>{ if(e.key==='r' || e.key==='R'){ resetGame(); }});
+
+function resetGame(){
+  player.x=W/2; player.y=H/2; player.health=100; player.maxHealth=100; player.tokens=0; player.kills=0; player.weapon='Pistol'; player.baseSpeed=2.6; player.speed=player.baseSpeed; bullets=[]; zombies=[]; wave=1; spawnCount=5; spawnZombies(spawnCount); paused=false;
+}
+
+// Main loop
+function loop(now){
+  const dt = Math.min(0.04,(now-lastFrame)/1000); // cap dt
+  lastFrame = now;
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// Extra: auto-fire for MG when holding mouse
+setInterval(()=>{
+  if(mouse.down && player.weapon==='MG' && !paused) shoot();
+}, 80);
+
+// Small helper to keep player.speed synced to baseSpeed (in case shop changed base)
+setInterval(()=>{ player.speed = player.baseSpeed; },200);
+
+</script>
+</body>
+</html>
